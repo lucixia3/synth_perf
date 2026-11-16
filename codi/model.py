@@ -12,13 +12,17 @@ def prompt_onehot(seg, costat):
 
 
 class EmbeddingPrompt(nn.Module):
-    def __init__(self, dim=64):
+    def __init__(self, dim=64, n_clin=0):
         super().__init__()
-        self.mlp = nn.Sequential(nn.Linear(len(SEGMENTS) + len(COSTATS), dim), nn.ReLU(),
+        self.n_clin = n_clin
+        self.mlp = nn.Sequential(nn.Linear(len(SEGMENTS) + len(COSTATS) + n_clin, dim), nn.ReLU(),
                                  nn.Linear(dim, dim), nn.ReLU())
 
-    def forward(self, seg, costat):
-        return self.mlp(prompt_onehot(seg, costat))
+    def forward(self, seg, costat, clin=None):
+        x = prompt_onehot(seg, costat)
+        if self.n_clin:
+            x = torch.cat([x, clin.float()], 1)
+        return self.mlp(x)
 
 
 class ModulAtles(nn.Module):
@@ -81,10 +85,22 @@ class Bloc(nn.Module):
         return F.silu(h)
 
 
+class FusioSimetrica(nn.Module):
+    def __init__(self, canals):
+        super().__init__()
+        self.conv = nn.Conv2d(2 * canals, canals, 1)
+        nn.init.zeros_(self.conv.weight)
+        nn.init.zeros_(self.conv.bias)
+
+    def forward(self, x):
+        return x + self.conv(torch.cat([x, torch.flip(x, dims=[2])], 1))
+
+
 class Encoder(nn.Module):
-    def __init__(self, c_in, canals, dim_emb):
+    def __init__(self, c_in, canals, dim_emb, simetria=False):
         super().__init__()
         self.blocs = nn.ModuleList()
+        self.fusio = nn.ModuleList([FusioSimetrica(co) for co in canals]) if simetria else None
         c = c_in
         for co in canals:
             self.blocs.append(Bloc(c, co, dim_emb))
@@ -96,6 +112,8 @@ class Encoder(nn.Module):
             if i:
                 x = F.avg_pool2d(x, 2)
             x = b(x, emb)
+            if self.fusio is not None:
+                x = self.fusio[i](x)
             salts.append(x)
         return salts
 
@@ -119,17 +137,24 @@ class Decoder(nn.Module):
 
 
 class Generador(nn.Module):
-    def __init__(self, etiquetes, c_in=4, canals=(32, 64, 128, 256), dim_emb=64, taula_inicial=None):
+    def __init__(self, etiquetes, c_in=4, canals=(32, 64, 128, 256), dim_emb=64, taula_inicial=None, dropout=0.0,
+                 n_clin=0, simetria=False):
         super().__init__()
-        self.emb = EmbeddingPrompt(dim_emb)
+        self.dropout = dropout
+        self.emb = EmbeddingPrompt(dim_emb, n_clin)
         self.atles = ModulAtles(etiquetes, taula_inicial)
-        self.encoder = Encoder(c_in + 1, canals, dim_emb)
+        self.encoder = Encoder(c_in + 1, canals, dim_emb, simetria)
         self.decoder = Decoder(canals, dim_emb)
 
-    def forward(self, ncct, z, seg, costat):
-        emb = self.emb(seg, costat)
+    def forward(self, ncct, z, seg, costat, theta=None, clin=None):
+        emb = self.emb(seg, costat, clin)
         prior = self.atles(z, seg, costat)
+        if theta is not None:
+            g = F.affine_grid(theta, prior.shape, align_corners=False)
+            prior = F.grid_sample(prior, g, mode="bilinear", align_corners=False)
         salts = self.encoder(torch.cat([ncct, prior], 1), emb)
+        if self.dropout > 0:
+            salts = salts[:-2] + [F.dropout2d(t, self.dropout, self.training) for t in salts[-2:]]
         return self.decoder(salts, prior, emb), prior
 
 
