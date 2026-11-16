@@ -14,7 +14,7 @@ from dades import TallsMNI, ESCALA_TMAX, etiquetes_atles, vas_a_prompt
 from model import Generador
 
 LLINDAR = 6.0
-ENSEMBLES = {"ens_lesio_cta": ["cta", "cta+ncct_lesio"]}
+ENSEMBLES = {"ens_cta": ["cta", "cta_lesio"]}
 
 
 def carrega_model(d, dev):
@@ -86,7 +86,7 @@ def bootstrap(a, b, n=5000, llavor=0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", type=Path, default=Path("exp"))
-    ap.add_argument("--models", default="cta,cta+ncct_lesio")
+    ap.add_argument("--models", default="cta,cta_lesio")
     ap.add_argument("--isles", type=Path, required=True)
     ap.add_argument("--vasos", type=Path, required=True)
     ap.add_argument("--train", type=Path, required=True)
